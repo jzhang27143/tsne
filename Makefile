@@ -1,8 +1,8 @@
 EXECUTABLE := tsne
 LDFLAGS=-L/usr/local/depot/cuda-10.2/lib64/ -lcudart
-#CU_FILES   := 
+CU_FILES   := tsne.cu
 CU_DEPS    :=
-CC_FILES   := tsne.cpp
+CC_FILES   := #tsne.cpp
 
 all: $(EXECUTABLE)
 
@@ -17,7 +17,7 @@ HOSTNAME=$(shell hostname)
 LIBS       :=
 FRAMEWORKS :=
 
-NVCCFLAGS=-O3 -m64 --gpu-architecture compute_61 -ccbin /usr/bin/gcc
+NVCCFLAGS=-O3 -m64 --gpu-architecture compute_61 -ccbin /usr/bin/gcc -std=c++11
 LIBS += GL glut cudart
 
 LDLIBS  := $(addprefix -l, $(LIBS))

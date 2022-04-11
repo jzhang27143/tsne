@@ -7,6 +7,12 @@
 #include <string>
 #include <vector>
 
+#include <thrust/device_free.h>
+#include <thrust/device_malloc.h>
+#include <thrust/device_vector.h>
+#include <thrust/scan.h>
+
+
 void usage(const char *progname) {
     printf("Program Options:\n");
     printf("  -D  --dataset   <FILENAME>   Input file containing the raw feature data\n");
@@ -17,8 +23,9 @@ void usage(const char *progname) {
 }
 
 template <class T>
-std::vector<T> load_data(std::string filename, T (*convert)(const std::string&)) {
-    std::vector<T> vec;
+thrust::device_vector<T> load_data(std::string filename, T (*convert)(const std::string&)) {
+    // May need device_malloc for MNIST
+    thrust::device_vector<T> vec;
     std::ifstream in_file(filename.c_str());
     if (in_file.is_open()) {
         std::string line, token;
@@ -84,9 +91,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    std::vector<int> nn_index = load_data(index_fname, &stoi);
-    std::vector<float> nn_dists = load_data(dists_fname, &stof);
-    std::vector<float> dataset = load_data(dataset_fname, &stof);
-
+    thrust::device_vector<int> nn_index = load_data(index_fname, &stoi);
+    thrust::device_vector<float> nn_dists = load_data(dists_fname, &stof);
+    thrust::device_vector<float> dataset = load_data(dataset_fname, &stof);
+    int num_points = nn_index.size() / k;
     return 0;
 }
