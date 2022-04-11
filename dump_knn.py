@@ -8,7 +8,7 @@ def find_knn(dataset, k):
     index = faiss.IndexFlatL2(dataset.shape[1])
     index.add(dataset)
     D, I = index.search(dataset, k + 1)
-    return D, I[:,1:] # 0'th column is identity (0 distance)
+    return D[:,1:], I[:,1:] # 0'th column is identity (0 distance)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='k-NN Search for Iris/MNIST')
@@ -25,6 +25,8 @@ if __name__ == '__main__':
         N, W, H = dataset.shape
         dataset = dataset.reshape(N, W * H)
 
-    _, I = find_knn(dataset, args.k)
-    np.savetxt(f'{args.dataset}_k_{args.k}.out', I.astype('int'),
+    D, I = find_knn(dataset, args.k)
+    np.savetxt(f'{args.dataset}_k_{args.k}_index.out', I.astype('int'),
                delimiter=',', fmt='%d')
+    np.savetxt(f'{args.dataset}_k_{args.k}_dists.out', D, delimiter=',',
+               fmt='%1.4e')
