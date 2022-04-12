@@ -49,6 +49,20 @@ For the remainder of our code, we plan to start from scratch, using the code bas
 
 We plan to use CUDA to implement the parallelization version and collect results on NVIDIA GPU's. FAISS is highly optimized for CUDA, related works have parallized t-SNE using CUDA, and we may expect to achieve greater speedups by taking advantage of the warp architecture.
 
+## Milestone
+
+So far, we have completed the basic infrastructure for our implementation, nearest neighbors calculations using FAISS, and perplexity estimation using binary search. We discovered that our disk quotas on the GHC machines do not allow us to install FAISS directly, so we resorted to creating a separate python script to dump nearest neighbor distances and indices in txt files. Since this is an initialization step, separating the t-SNE pipeline like this should not have a major impact on performance, but we will time the nearest neighbor calculations and try to find a GPU where we can leverage FAISS's CUDA optimizations.
+
+One step that we overlooked when we created the proposal was determining how to initialize the variances of the Gaussian kernels. Official implementations set the variances so that the entropy is a fixed value e.g. 30 by default, but the variances that achieve this must be found using binary search. Thus, we created a CUDA kernel to conduct binary search for variance initialization.
+
+Overall, we are on a good pace albeit slightly behind our proposed schedule. We estimate that we will be able to finish all components on time. Although we will most likely not be able to run CIFAR-10 experiments, we aim to perform K-means clustering on generated embeddings to get a quality measure. At the poster session, we intend to show the following:
+
+* A scatter plot of the 2-D embeddings for MNIST showing distinct regions for each of the 10 digit classes
+* A speedup plot showing speedups vs. the number of data points (we will run experiments using t-SNE with different size subsets of MNIST images)
+* A speedup multiplier compared to SK-Learn's official t-SNE implementation (single-core).
+
+At this point, there are not any major issues to deal with. Ideally, we would like to have a GPU that can run cuBLAS for our matrix-vector products (unfortunately, GHC machines do not have this library), but we are able to develop using thrust. 
+
 ## Schedule
 
 * Week of March 28th
@@ -61,15 +75,20 @@ We plan to use CUDA to implement the parallelization version and collect results
     
 * Week of April 10th (Milestone report)
 
-    * Finish first implementation of t-SNE on CUDA (most likely with sub-optimal work allocation) and write milestone report.
+    * Implement a quad tree data structure (either from scratch or if an existing repo is usable) - Jason
+    * Integrate the quad tree with the t-SNE code so that gradient calculations include both attractive and repulsive forces - Vy
+    * At this point, the t-SNE implementation should be fully functional
 
 * Week of April 17th
 
-    * Explore different work allocation policies to improve load balancing and benchmark speedups on Iris and MNIST datasets.
+    * Benchmark our implementation at this point on Iris and MNIST - Jason
+    * Explore different work allocation policies to improve load balancing - Jason, Vy
+    * Implement utility to plot 2D embeddings for Iris and MNIST - Jason
+    * Impelment k-Means clustering on embeddings and measure accuracy - Vy
 
 * Week of April 23rd (Final report week)
 
-    * Finalize results and write the final report.
+    * Finalize results and write the final report - Jason, Vy
 
 ## References
 [1] L. Van Der Maaten. 2014. Accelerating t-SNE using tree-based algorithms. J. Mach. Learn. Res. 15, 3221–3245.
