@@ -12,14 +12,17 @@
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
 
+#include "kernels/perplexity_search.h"
 
 void usage(const char *progname) {
     printf("Program Options:\n");
-    printf("  -D  --dataset   <FILENAME>   Input file containing the raw feature data\n");
-    printf("  -d  --nn_dists  <FILENAME>   Input file with L2 distances between nearest neighbors\n");
-    printf("  -i  --nn_index  <FILENAME>   Input file identifying indices of nearest neighbors\n");
-    printf("  -k  --k         <INT>        Number of nearest neighbors per point\n");
-    printf("  -h  --help                   This message\n");
+    printf("  -D  --dataset     <FILENAME>   Input file containing the raw feature data\n");
+    printf("  -d  --nn_dists    <FILENAME>   Input file with L2 distances between nearest neighbors\n");
+    printf("  -i  --nn_index    <FILENAME>   Input file identifying indices of nearest neighbors\n");
+    printf("  -k  --k           <INT>        Number of nearest neighbors per point\n");
+    printf("  -p  --perplexity  <FLOAT>      Perplexity target for variance initialization\n");
+    printf("  -e  --epsilon     <FLOAT>      Convergence threshold for perplexity search\n");
+    printf("  -h  --help                     This message\n");
 }
 
 template <class T>
@@ -61,16 +64,20 @@ int main(int argc, char **argv) {
         {"nn_dists", 1, 0, 'd'},
         {"nn_index", 1, 0, 'i'},
         {"k", 1, 0, 'k'},
+        {"perplexity", 1, 0, 'p'},
+        {"epsilon", 1, 0, 'e'},
         {"help", 0, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     int k;
+    float perplexity_target = 30.f;
+    float epsilon = 1e-4;
     std::string dataset_fname;
     std::string dists_fname;
     std::string index_fname;
 
-    while ((opt = getopt_long(argc, argv, "D:d:i:k:h", long_options, NULL)) != EOF) {
+    while ((opt = getopt_long(argc, argv, "D:d:i:k:p:e:h", long_options, NULL)) != EOF) {
         switch (opt) {
         case 'D':
             dataset_fname = optarg;
@@ -84,6 +91,12 @@ int main(int argc, char **argv) {
         case 'k':
             k = atoi(optarg);
             break;
+        case 'p':
+            perplexity_target = atof(optarg);
+            break;
+        case 'e':
+            epsilon = atof(optarg);
+            break;
         case 'h':
         default:
             usage(argv[0]);
@@ -95,5 +108,8 @@ int main(int argc, char **argv) {
     thrust::device_vector<float> nn_dists = load_data(dists_fname, &stof);
     thrust::device_vector<float> dataset = load_data(dataset_fname, &stof);
     int num_points = nn_index.size() / k;
+
+    thrust::device_vector<float> pij(num_points * k);
+    search_perplexity(pij, nn_dists, perplexity_target, epsilon, num_points, k);
     return 0;
 }

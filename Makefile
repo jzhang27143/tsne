@@ -25,7 +25,7 @@ LDFRAMEWORKS := $(addprefix -framework , $(FRAMEWORKS))
 
 NVCC=nvcc
 
-OBJS=$(OBJDIR)/tsne.o
+OBJS=$(OBJDIR)/tsne.o $(OBJDIR)/perplexity_search.o
 
 
 .PHONY: dirs clean
@@ -45,4 +45,7 @@ $(OBJDIR)/%.o: %.cpp
 		$(CXX) $< $(CXXFLAGS) -c -o $@
 
 $(OBJDIR)/%.o: %.cu
+		$(NVCC) $< $(NVCCFLAGS) -c -o $@
+
+$(OBJDIR)/%.o: kernels/%.cu
 		$(NVCC) $< $(NVCCFLAGS) -c -o $@
