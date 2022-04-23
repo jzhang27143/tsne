@@ -1,3 +1,5 @@
+
+#include <cuda.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +15,7 @@
 #include <thrust/scan.h>
 
 #include "kernels/perplexity_search.h"
+#include "kernels/utils.h"
 
 void usage(const char *progname) {
     printf("Program Options:\n");
@@ -110,6 +113,13 @@ int main(int argc, char **argv) {
     int num_points = nn_index.size() / k;
 
     thrust::device_vector<float> pij(num_points * k);
+    thrust::device_vector<float> pij_sym(num_points * k);
     search_perplexity(pij, nn_dists, perplexity_target, epsilon, num_points, k);
+    symmetrize_matrix(pij_sym, pij, nn_index, num_points, k);
+    
+    // Initialize 2D points
+    thrust::device_vector<float2> ys(num_points);
+    initialize_points(ys, num_points);
+
     return 0;
 }
