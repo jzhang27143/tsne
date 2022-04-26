@@ -14,6 +14,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
 
+#include "kernels/gradients.h"
 #include "kernels/perplexity_search.h"
 #include "kernels/utils.h"
 
@@ -25,6 +26,7 @@ void usage(const char *progname) {
     printf("  -k  --k           <INT>        Number of nearest neighbors per point\n");
     printf("  -p  --perplexity  <FLOAT>      Perplexity target for variance initialization\n");
     printf("  -e  --epsilon     <FLOAT>      Convergence threshold for perplexity search\n");
+    printf("  -T  --num_iters   <INT>        Number of gradient descent iterations\n");
     printf("  -h  --help                     This message\n");
 }
 
@@ -69,18 +71,20 @@ int main(int argc, char **argv) {
         {"k", 1, 0, 'k'},
         {"perplexity", 1, 0, 'p'},
         {"epsilon", 1, 0, 'e'},
+        {"num_iters", 1, 0, 'T'},
         {"help", 0, 0, 'h'},
         {0, 0, 0, 0}
     };
 
     int k;
+    int num_iters = 1; // 1000;
     float perplexity_target = 30.f;
     float epsilon = 1e-4;
     std::string dataset_fname;
     std::string dists_fname;
     std::string index_fname;
 
-    while ((opt = getopt_long(argc, argv, "D:d:i:k:p:e:h", long_options, NULL)) != EOF) {
+    while ((opt = getopt_long(argc, argv, "D:d:i:k:p:e:T:h", long_options, NULL)) != EOF) {
         switch (opt) {
         case 'D':
             dataset_fname = optarg;
@@ -100,6 +104,9 @@ int main(int argc, char **argv) {
         case 'e':
             epsilon = atof(optarg);
             break;
+        case 'T':
+            num_iters = atoi(optarg);
+            break;
         case 'h':
         default:
             usage(argv[0]);
@@ -118,8 +125,12 @@ int main(int argc, char **argv) {
     symmetrize_matrix(pij_sym, pij, nn_index, num_points, k);
     
     // Initialize 2D points
-    thrust::device_vector<float2> ys(num_points);
-    initialize_points(ys, num_points);
+    thrust::device_vector<float2> embed(num_points);
+    initialize_points(embed, num_points);
 
+    thrust::device_vector<float2> grad_attract(num_points);
+    for (int t = 0; t < num_iters; t++) {
+        compute_attractive_forces(pij_sym, embed, nn_index, grad_attract, num_points, k);
+    }
     return 0;
 }
