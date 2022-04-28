@@ -25,7 +25,7 @@ LDFRAMEWORKS := $(addprefix -framework , $(FRAMEWORKS))
 
 NVCC=nvcc
 
-OBJS=$(OBJDIR)/tsne.o $(OBJDIR)/perplexity_search.o
+OBJS=$(OBJDIR)/tsne.o $(OBJDIR)/gradients.o $(OBJDIR)/perplexity_search.o $(OBJDIR)/quad_tree.o $(OBJDIR)/utils.o
 
 
 .PHONY: dirs clean

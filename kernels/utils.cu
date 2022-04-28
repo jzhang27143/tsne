@@ -44,16 +44,18 @@ void symmetrize_matrix(thrust::device_vector<float> &pij_unsym,
     ); 
 }
 
-void initialize_points(thrust::device_vector<float2> &ys, int num_points) {
-    thrust::host_vector<float2> host_ys(num_points);
+void initialize_points(thrust::device_vector<float> &embed_x,
+                       thrust::device_vector<float> &embed_y, int num_points) {
+    thrust::host_vector<float> host_embed_x(num_points);
+    thrust::host_vector<float> host_embed_y(num_points);
 
     std::default_random_engine generator(15618);
     std::normal_distribution<float> norm_dist(0.0, 0.0001);
-    for (int i = 0; i < host_ys.size(); i++) {
-        host_ys[i].x = norm_dist(generator);
-        host_ys[i].y = norm_dist(generator);
+    for (int i = 0; i < num_points; i++) {
+        host_embed_x[i] = norm_dist(generator);
+        host_embed_y[i] = norm_dist(generator);
     }
 
-    thrust::copy(host_ys.begin(), host_ys.end(), ys.begin());   
-
+    thrust::copy(host_embed_x.begin(), host_embed_x.end(), embed_x.begin());   
+    thrust::copy(host_embed_y.begin(), host_embed_y.end(), embed_y.begin());
 }

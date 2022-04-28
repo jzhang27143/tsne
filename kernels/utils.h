@@ -6,4 +6,5 @@ void symmetrize_matrix(thrust::device_vector<float> &pij_unsym,
                        thrust::device_vector<int> &nn_indices,
                        int num_points, int k);
 
-void initialize_points(thrust::device_vector<float2> &ys, int num_points); 
+void initialize_points(thrust::device_vector<float> &embed_x,
+                       thrust::device_vector<float> &embed_y, int num_points); 
