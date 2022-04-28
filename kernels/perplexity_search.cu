@@ -142,12 +142,12 @@ void search_perplexity(thrust::device_vector<float> &pij, thrust::device_vector<
             num_points, k
         );
         cudaDeviceSynchronize();
-        
-        kernel_reduce_sum<<<BLOCKSIZE1, NBLOCKS1>>>(thrust::raw_pointer_cast(row_sum.data()),
+        kernel_reduce_sum<<<NBLOCKS1, BLOCKSIZE1>>>(thrust::raw_pointer_cast(row_sum.data()),
                                                     thrust::raw_pointer_cast(pij.data()), 
                                                     num_points, k, 1.f);
         thrust::transform(pij.begin(), pij.end(), entropy.begin(), functional_entropy());
-        kernel_reduce_sum<<<BLOCKSIZE1, NBLOCKS1>>>(thrust::raw_pointer_cast(neg_entropy.data()),
+
+        kernel_reduce_sum<<<NBLOCKS1, BLOCKSIZE1>>>(thrust::raw_pointer_cast(neg_entropy.data()),
                                                     thrust::raw_pointer_cast(entropy.data()),
                                                     num_points, k, -1.f);
         kernel_perplexity_search<<<NBLOCKS2, BLOCKSIZE2>>>(

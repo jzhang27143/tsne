@@ -330,15 +330,8 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
 
     for (int i = 0; i < num_points; i++) {
         insert_quadtree_node(nodes, 0, embed_x[i], embed_y[i], &next_free_idx, max_depth);
-        //std::cout << "Next free Index: " << next_free_idx << std::endl;
     }    
 
-    for (int i = 0; i < max_nodes; i++) {
-        QuadTreeNode_t node = nodes[i];
-        //std::cout << "Node: " << i << " Children: " << node.top_left_child_idx << " "
-        //          << node.top_right_child_idx << " " << node.bottom_left_child_idx << " "
-        //          << node.bottom_right_child_idx << "\n";
-    }
     //print_quad_tree2(nodes);
     QuadTreeNode_t *d_nodes;
     cudaMalloc((void **)&d_nodes, max_nodes * sizeof(QuadTreeNode_t));
@@ -357,15 +350,6 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
                                                     thrust::raw_pointer_cast(grad_repulsive_y.data()),
                                                     thrust::raw_pointer_cast(z_partials.data()),
                                                     num_points, theta);
-    /*
-    for (int i = 0; i < num_points; i++) {
-        std::cout << "grad repulsive " << grad_repulsive_x[i] << std::endl;
-    }
-
-    for (int i = 0; i < num_points; i++) {
-        std::cout << "Point " << i << " " << z_partials[i] << "\n";
-    }
-    */
     float sum_z = thrust::reduce(z_partials.begin(), z_partials.end(), 0.f, thrust::plus<float>());
 
     kernel_normalize_forces<<<NBLOCKS, BLOCKSIZE>>>(thrust::raw_pointer_cast(grad_repulsive_x.data()),

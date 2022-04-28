@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cuda.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -65,7 +66,6 @@ void dump_final_embeds(std::string dataset_fname, int num_points,
     
     std::string input_fname(dataset_fname);
 
-    input_fname = input_fname.substr(5, input_fname.length() - 5 - 4);
     std::string output_fname = "./output_" + input_fname + ".txt";
     std::cout << output_fname << "\n";
     FILE *output = fopen(const_cast<char*>(output_fname.c_str()), "w");
@@ -81,6 +81,10 @@ void dump_final_embeds(std::string dataset_fname, int num_points,
 }
 
 int main(int argc, char **argv) {
+    using namespace std::chrono;
+    typedef std::chrono::high_resolution_clock Clock;
+    typedef std::chrono::duration<double> dsec;
+
 
     // Parse commandline options
     int opt;
@@ -138,14 +142,16 @@ int main(int argc, char **argv) {
             return 1;
         }
     }
-
+    
+    std::cout << "Loading index file...\n";
     thrust::device_vector<int> nn_index = load_data(index_fname, &stoi);
+    std::cout << "Loading distance file...\n";
     thrust::device_vector<float> nn_dists = load_data(dists_fname, &stof);
-    thrust::device_vector<float> dataset = load_data(dataset_fname, &stof);
+    //thrust::device_vector<float> dataset = load_data(dataset_fname, &stof);
     int num_points = nn_index.size() / k;
-
     thrust::device_vector<float> pij(num_points * k);
     thrust::device_vector<float> pij_sym(num_points * k);
+
     search_perplexity(pij, nn_dists, perplexity_target, epsilon, num_points, k);
     symmetrize_matrix(pij_sym, pij, nn_index, num_points, k);
     
@@ -153,13 +159,13 @@ int main(int argc, char **argv) {
     thrust::device_vector<float> embed_x(num_points);
     thrust::device_vector<float> embed_y(num_points);
     initialize_points(embed_x, embed_y, num_points);
-
+    
     // Initialize attractive and repulsive forces
     thrust::device_vector<float> grad_attract_x(num_points);
     thrust::device_vector<float> grad_attract_y(num_points);
     thrust::device_vector<float> grad_repulsive_x(num_points);
     thrust::device_vector<float> grad_repulsive_y(num_points);
-
+    
     // Initialize parameters for t-SNE
     thrust::device_vector<float> old_forces_x(num_points, 0.f);
     thrust::device_vector<float> old_forces_y(num_points, 0.f);
@@ -170,6 +176,9 @@ int main(int argc, char **argv) {
     float momentum = 0.5f;
     float exaggeration = 12.f;
     
+    auto compute_start = Clock::now();
+    double compute_time = 0;
+
     for (int t = 0; t < num_iters; t++) {
 
         std::cout << "Iteration: " << t << std::endl;
@@ -186,50 +195,10 @@ int main(int argc, char **argv) {
                      grad_repulsive_x, grad_repulsive_y,
                      learning_rate, momentum, exaggeration, num_points);
     }
-    /*
-    thrust::host_vector<float> host_x(9);
-    thrust::host_vector<float> host_y(9);
-    host_x[0] = 0.f;
-    host_x[1] = 0.f;
-    host_x[2] = 0.f;
-    host_x[3] = 1.f;
-    host_x[4] = 1.f;
-    host_x[5] = 1.f;
-    host_x[6] = 2.f;
-    host_x[7] = 2.f;
-    host_x[8] = 2.f;
 
-    host_y[0] = 0.f;
-    host_y[1] = 1.f;
-    host_y[2] = 2.f;
-    host_y[3] = 0.f;
-    host_y[4] = 1.f;
-    host_y[5] = 2.f;
-    host_y[6] = 0.f;
-    host_y[7] = 1.f;
-    host_y[8] = 2.f;
- 
-
-    thrust::device_vector<float> device_x = host_x;
-    thrust::device_vector<float> device_y = host_y;   
-    thrust::device_vector<float> grad_repulsive_x(9, 0.f);
-    thrust::device_vector<float> grad_repulsive_y(9, 0.f);  
+    compute_time += duration_cast<dsec>(Clock::now() - compute_start).count();
+    printf("t-SNE Computation Time: %lf.\n", compute_time);
     
-    for (int i = 0; i < 9; i++) {
-        std::cout << grad_repulsive_x[i] << " " << grad_repulsive_y[i] << std::endl;
-    }  
-
-    compute_repulsive_forces(device_x, device_y, grad_repulsive_x, grad_repulsive_y, 9, theta);
-    thrust::host_vector<float> host_repulsive_x(9);
-    thrust::host_vector<float> host_repulsive_y(9);
-
-    thrust::copy(grad_repulsive_x.begin(), grad_repulsive_x.end(), host_repulsive_x.begin());
-    thrust::copy(grad_repulsive_y.begin(), grad_repulsive_y.end(), host_repulsive_y.begin());
-
-    for (int i = 0; i < 9; i++) {
-        std::cout << host_repulsive_x[i] << " " << host_repulsive_y[i] << std::endl;
-    }
-    */
     thrust::host_vector<float> host_embed_x(num_points);
     thrust::host_vector<float> host_embed_y(num_points);
     thrust::copy(embed_x.begin(), embed_x.end(), host_embed_x.begin());
