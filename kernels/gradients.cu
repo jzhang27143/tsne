@@ -1,3 +1,4 @@
+#include <chrono>
 #include <cuda.h>
 #include "thrust/device_vector.h"
 #include "thrust/reduce.h"
@@ -311,7 +312,12 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
                               thrust::device_vector<float> &grad_repulsive_y,
                               int num_points, float theta) {
 
+    using namespace std::chrono;
+    typedef std::chrono::high_resolution_clock Clock;
+    typedef std::chrono::duration<double> dsec;
+ 
     // Step 1: Build the quad tree with the embeded points
+    auto build_start = Clock::now();
 
     auto min_max_x = thrust::minmax_element(embed_x.begin(), embed_x.end());
     auto min_max_y = thrust::minmax_element(embed_y.begin(), embed_y.end());
@@ -330,16 +336,21 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
 
     for (int i = 0; i < num_points; i++) {
         insert_quadtree_node(nodes, 0, embed_x[i], embed_y[i], &next_free_idx, max_depth);
-    }    
+    }
 
-    //print_quad_tree2(nodes);
+    double build_time = duration_cast<dsec>(Clock::now() - build_start).count();
+
+    // Step 2: Memcpy to GPU;
+
     QuadTreeNode_t *d_nodes;
     cudaMalloc((void **)&d_nodes, max_nodes * sizeof(QuadTreeNode_t));
     cudaMemcpy(d_nodes, nodes, max_nodes * sizeof(QuadTreeNode_t), cudaMemcpyHostToDevice);
     
     thrust::device_vector<float> z_partials(num_points, 0.f);
 
-    // Step 2: Traverse tree
+    // Step 3: Traverse tree
+    auto traverse_start = Clock::now();
+   
     const int BLOCKSIZE = 1024;
     const int NBLOCKS = (num_points + BLOCKSIZE - 1) / BLOCKSIZE;
 
@@ -350,11 +361,22 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
                                                     thrust::raw_pointer_cast(grad_repulsive_y.data()),
                                                     thrust::raw_pointer_cast(z_partials.data()),
                                                     num_points, theta);
+    
+    double traverse_time = duration_cast<dsec>(Clock::now() - traverse_start).count();
+    // Step 4: Normalize forces
+    auto normalize_start = Clock::now();
+     
     float sum_z = thrust::reduce(z_partials.begin(), z_partials.end(), 0.f, thrust::plus<float>());
 
     kernel_normalize_forces<<<NBLOCKS, BLOCKSIZE>>>(thrust::raw_pointer_cast(grad_repulsive_x.data()),
                                                     thrust::raw_pointer_cast(grad_repulsive_y.data()),
                                                     sum_z, num_points);
+    
+    double normalize_time = duration_cast<dsec>(Clock::now() - normalize_start).count();
+
+    printf("Building Tree Time: %lf.\n", build_time);
+    printf("Traversing Tree Time: %lf.\n", traverse_time);
+    printf("Normalizing/Reducing Time: %lf.\n", normalize_time);
     cudaFree(d_nodes);
     free(nodes);    
 }

@@ -178,27 +178,43 @@ int main(int argc, char **argv) {
     
     auto compute_start = Clock::now();
     double compute_time = 0;
+    double attract_force_time = 0;
+    double repulsive_force_time = 0;
+    double apply_force_time = 0;
 
     for (int t = 0; t < num_iters; t++) {
 
         std::cout << "Iteration: " << t << std::endl;
+
+        auto attract_start = Clock::now();
         compute_attractive_forces(pij_sym, embed_x, embed_y, nn_index,
                                   grad_attract_x, grad_attract_y, num_points, k);
+
+        auto repulsive_start = Clock::now();
         compute_repulsive_forces(embed_x, embed_y, grad_repulsive_x, grad_repulsive_y,
                                  num_points, theta);
         if (t > 250) {
             momentum = 0.8f;
             exaggeration = 1.f;
         }
+
+        auto apply_start = Clock::now();
         apply_forces(embed_x, embed_y, gains_x, gains_y, old_forces_x, old_forces_y,
                      grad_attract_x, grad_attract_y,
                      grad_repulsive_x, grad_repulsive_y,
                      learning_rate, momentum, exaggeration, num_points);
+
+        attract_force_time += duration_cast<dsec>(repulsive_start - attract_start).count();
+        repulsive_force_time += duration_cast<dsec>(apply_start - repulsive_start).count();
+        apply_force_time += duration_cast<dsec>(Clock::now() - apply_start).count();
     }
 
     compute_time += duration_cast<dsec>(Clock::now() - compute_start).count();
     printf("t-SNE Computation Time: %lf.\n", compute_time);
-    
+    printf("Computing Attractive Forces Time: %lf.\n", attract_force_time);
+    printf("Computing Repulsive Forces Time: %lf.\n", repulsive_force_time);
+    printf("Applying Forces Time: %lf.\n", apply_force_time);
+
     thrust::host_vector<float> host_embed_x(num_points);
     thrust::host_vector<float> host_embed_y(num_points);
     thrust::copy(embed_x.begin(), embed_x.end(), host_embed_x.begin());
