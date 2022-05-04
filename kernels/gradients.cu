@@ -334,8 +334,13 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
     init_quadtree_node(&nodes[0], top_left, bottom_right, make_float2(0.f, 0.f), 0);
     int next_free_idx = 1;
 
+    std::vector<float> embed_x_h(num_points);
+    std::vector<float> embed_y_h(num_points);
+    thrust::copy(embed_x.begin(), embed_x.end(), embed_x_h.begin());
+    thrust::copy(embed_y.begin(), embed_y.end(), embed_y_h.begin());
+
     for (int i = 0; i < num_points; i++) {
-        insert_quadtree_node(nodes, 0, embed_x[i], embed_y[i], &next_free_idx, max_depth);
+        insert_quadtree_node(nodes, 0, embed_x_h[i], embed_y_h[i], &next_free_idx, max_depth);
     }
 
     double build_time = duration_cast<dsec>(Clock::now() - build_start).count();
@@ -353,7 +358,6 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
    
     const int BLOCKSIZE = 1024;
     const int NBLOCKS = (num_points + BLOCKSIZE - 1) / BLOCKSIZE;
-
     kernel_repulsive_forces<<<NBLOCKS, BLOCKSIZE>>>(d_nodes,
                                                     thrust::raw_pointer_cast(embed_x.data()),
                                                     thrust::raw_pointer_cast(embed_y.data()),
@@ -361,17 +365,18 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
                                                     thrust::raw_pointer_cast(grad_repulsive_y.data()),
                                                     thrust::raw_pointer_cast(z_partials.data()),
                                                     num_points, theta);
-    
+    cudaDeviceSynchronize();
     double traverse_time = duration_cast<dsec>(Clock::now() - traverse_start).count();
+
     // Step 4: Normalize forces
     auto normalize_start = Clock::now();
-     
     float sum_z = thrust::reduce(z_partials.begin(), z_partials.end(), 0.f, thrust::plus<float>());
 
     kernel_normalize_forces<<<NBLOCKS, BLOCKSIZE>>>(thrust::raw_pointer_cast(grad_repulsive_x.data()),
                                                     thrust::raw_pointer_cast(grad_repulsive_y.data()),
                                                     sum_z, num_points);
-    
+    cudaDeviceSynchronize();
+
     double normalize_time = duration_cast<dsec>(Clock::now() - normalize_start).count();
 
     printf("Building Tree Time: %lf.\n", build_time);
