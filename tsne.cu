@@ -158,6 +158,8 @@ int main(int argc, char **argv) {
     // Initialize 2D points
     thrust::device_vector<float> embed_x(num_points);
     thrust::device_vector<float> embed_y(num_points);
+    thrust::device_vector<float> embed_x_tmp(num_points);
+    thrust::device_vector<float> embed_y_tmp(num_points);
     initialize_points(embed_x, embed_y, num_points);
     
     // Initialize attractive and repulsive forces
@@ -191,8 +193,9 @@ int main(int argc, char **argv) {
                                   grad_attract_x, grad_attract_y, num_points, k);
 
         auto repulsive_start = Clock::now();
-        compute_repulsive_forces(embed_x, embed_y, grad_repulsive_x, grad_repulsive_y,
-                                 num_points, theta);
+        compute_repulsive_forces(embed_x, embed_y, embed_x_tmp, embed_y_tmp,
+                                 grad_repulsive_x, grad_repulsive_y, num_points, theta);
+
         if (t > 250) {
             momentum = 0.8f;
             exaggeration = 1.f;

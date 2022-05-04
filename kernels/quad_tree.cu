@@ -1,147 +1,222 @@
 #include <cuda.h>
-#include <queue>
-#include <iostream>
 #include "quad_tree.h"
+#include "exclusiveScan.cu_inl"
 
-QuadTreeNode::QuadTreeNode(float2 top_left_point, float2 bottom_right_point) {
-    top_left = top_left_point;
-    bottom_right = bottom_right_point;
-    center_of_mass = make_float2(0.f, 0.f);
-    num_points = 0;
-    box_width = bottom_right.x - top_left.x;
-    box_height = bottom_right.y - top_left.y;
-
-    top_left_child = NULL;
-    top_right_child = NULL;
-    bottom_left_child = NULL;
-    bottom_right_child = NULL;
-}
-
-__host__ __device__ QuadTreeNode::QuadTreeNode(float2 top_left_point, float2 bottom_right_point,
-                           float2 new_point) {
-    top_left = top_left_point;
-    bottom_right = bottom_right_point;
-    center_of_mass = new_point;
-    num_points = 1;
-
-    top_left_child = NULL;
-    top_right_child = NULL;
-    bottom_left_child = NULL;
-    bottom_right_child = NULL;
-}
-
-__host__ __device__ float2 QuadTreeNode::box_center() {
-    float center_x = 0.5f * (top_left.x + bottom_right.x);
-    float center_y = 0.5f * (top_left.y + bottom_right.y);
+__device__ float2 find_box_center(QuadTreeNode_t *n) {
+    float center_x = 0.5f * (n->top_left.x + n->bottom_right.x);
+    float center_y = 0.5f * (n->top_left.y + n->bottom_right.y);
     return make_float2(center_x, center_y);
 }
 
-__host__ __device__ bool QuadTreeNode::contains(float2 point) {
-    return (point.x >= top_left.x && point.x <= bottom_right.x &&
-             point.y >= top_left.y && point.y <= bottom_right.y);
+__device__ float find_box_width(QuadTreeNode_t *n) {
+    return n->bottom_right.x - n->top_left.x; 
 }
 
-__host__ __device__ void QuadTreeNode::add_point(float2 new_point) {
-    if (new_point.x < top_left.x || new_point.y < top_left.y || 
-        new_point.x > bottom_right.x || new_point.y > bottom_right.y) {
-        //std::cout << "New point does not belong in current quad tree node" << "\n";
-        return;
-    }
-  
-    float2 old_point;    
+__device__ float find_box_height(QuadTreeNode_t *n) {
+    return n->bottom_right.y - n->top_left.y;
+}
 
+__global__ void kernel_center_of_mass(QuadTreeNode_t *nodes, const int max_depth) {
+    register int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    register int num_threads = blockDim.x * gridDim.x;
+
+    for (int d = max_depth - 1; d >= 0; d--) {
+        register int start = ((1 << (2 * d)) - 1) / 3;
+        register int end = ((1 << (2 * d + 2)) - 1) / 3;
+
+        for (int i = start + tid; i < end; i += num_threads) {
+            QuadTreeNode_t *node = &nodes[i];
+            if (node->is_node && !node->is_leaf) {
+                float x = 0.f, y = 0.f;
+                int N = node->num_points;
+                QuadTreeNode_t *top_left = &nodes[4 * i + 1];
+                QuadTreeNode_t *top_right = &nodes[4 * i + 2];
+                QuadTreeNode_t *bottom_left = &nodes[4 * i + 3];
+                QuadTreeNode_t *bottom_right = &nodes[4 * i + 4];
+                if (top_left->is_node) {
+                    x += (&nodes[4 * i + 1])->center_of_mass.x * (&nodes[4 * i + 1])->num_points;
+                    y += (&nodes[4 * i + 1])->center_of_mass.y * (&nodes[4 * i + 1])->num_points;
+                }               
+                
+                if (top_right->is_node) {
+                    x += (&nodes[4 * i + 2])->center_of_mass.x * (&nodes[4 * i + 2])->num_points;
+                    y += (&nodes[4 * i + 2])->center_of_mass.y * (&nodes[4 * i + 2])->num_points;
+                }
+ 
+                if (bottom_left->is_node) {
+                    x += (&nodes[4 * i + 3])->center_of_mass.x * (&nodes[4 * i + 3])->num_points;
+                    y += (&nodes[4 * i + 3])->center_of_mass.y * (&nodes[4 * i + 3])->num_points;
+                }
+
+                if (bottom_right->is_node) {
+                    x += (&nodes[4 * i + 4])->center_of_mass.x * (&nodes[4 * i + 4])->num_points;
+                    y += (&nodes[4 * i + 4])->center_of_mass.y * (&nodes[4 * i + 4])->num_points;
+                }
+                node->center_of_mass = make_float2(x / N, y / N);
+            }
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void kernel_build_quadtree(float *__restrict__ embed_x_in,
+                                      float *__restrict__ embed_y_in,
+                                      float *__restrict__ embed_x_out,
+                                      float *__restrict__ embed_y_out,
+                                      QuadTreeNode_t *nodes,
+                                      int remaining_depth,
+                                      int node_idx) {
+
+    extern __shared__ uint smem[];
+    int root_node_idx = node_idx + blockIdx.x;    
+
+    int start = nodes[root_node_idx].start;
+    int end = nodes[root_node_idx].end;
+
+    register int num_threads = blockDim.x;
+    uint *bucket_counts_tl = smem;
+    uint *bucket_counts_tr = &smem[num_threads];
+    uint *bucket_counts_bl = &smem[2 * num_threads];
+    uint *bucket_counts_br = &smem[3 * num_threads];
+    uint *ex_scan_tl = &smem[4 * num_threads];
+    uint *ex_scan_tr = &smem[5 * num_threads];
+    uint *ex_scan_bl = &smem[6 * num_threads];
+    uint *ex_scan_br = &smem[7 * num_threads];
+    uint *ex_scan_scratch = &smem[8 * num_threads];
+
+    // register int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    register int tid = threadIdx.x;
+    register int num_points = end - start;
     if (num_points == 0) {
-        center_of_mass.x = new_point.x;
-        center_of_mass.y = new_point.y;
-    } else {
-        old_point = center_of_mass;
-        //update center of mass
-        center_of_mass.x = (center_of_mass.x * num_points + new_point.x) / (num_points + 1);
-        center_of_mass.y = (center_of_mass.y * num_points + new_point.y) / (num_points + 1);
-    }
-
-    num_points++;
-
-            
-    float2 box_center = QuadTreeNode::box_center();
-    // point in top left node
-    if (new_point.x <= box_center.x && new_point.y <= box_center.y) {
-        if (top_left_child == NULL) {
-            top_left_child = new QuadTreeNode(top_left, box_center, new_point);
-            if (top_left_child->contains(old_point)) {
-                top_left_child->add_point(old_point);
-            }
-        } else {
-            top_left_child->add_point(new_point);
-        }
-    }
-    // top right node
-    else if (new_point.x > box_center.x && new_point.y <= box_center.y) {
-        if (top_right_child == NULL) {
-            top_right_child = new QuadTreeNode(make_float2(box_center.x, top_left.y), 
-                                               make_float2(bottom_right.x, box_center.y), new_point);
-            if (top_right_child->contains(old_point)) {
-                top_right_child->add_point(old_point);
-            }
-        } else {
-            top_right_child->add_point(new_point);
-        }
-    }
-    // bottom left node
-    else if (new_point.x <= box_center.x && new_point.y > box_center.y) {
-        if (bottom_left_child == NULL) {
-            bottom_left_child = new QuadTreeNode(make_float2(top_left.x, box_center.y),
-                                                 make_float2(box_center.x, bottom_right.y), new_point);
-            if (bottom_left_child->contains(old_point)) {
-                bottom_left_child->add_point(old_point);
-            }
-        } else {
-            bottom_left_child->add_point(new_point);
-        }
-    }
-    // bottom right node
-    else if (new_point.x > box_center.x && new_point.y > box_center.y) {
-        if (bottom_right_child == NULL) {
-            bottom_right_child = new QuadTreeNode(box_center, bottom_right, new_point);
-            if (bottom_right_child->contains(old_point)) {
-                bottom_right_child->add_point(old_point);
-            }
-        } else {
-            bottom_right_child->add_point(new_point);
-        }
-    } 
-    // ILLEGAL STATE
-    else {
-    }
-}
-
-void print_quad_tree(QuadTreeNode* root) {
-    if (root == NULL) {
         return;
     }
 
-    std::cout << "Center of mass: " << root->center_of_mass.x << " " << root->center_of_mass.y <<
-                 "  Num points: " << root->num_points << std::endl;
+    QuadTreeNode_t *node = &nodes[root_node_idx];
+    if (tid == 0) {
+        node->num_points = num_points;
+        node->is_node = true;
+    }
 
-    std::queue<QuadTreeNode*> tree_queue;
-    tree_queue.push(root->top_left_child);
-    tree_queue.push(root->top_right_child);
-    tree_queue.push(root->bottom_left_child);
-    tree_queue.push(root->bottom_right_child);
+    if (num_points == 1 || remaining_depth == 0) {
+        if (tid == 0) {
+            float x_center_of_mass = 0.f;
+            float y_center_of_mass = 0.f;
+            for (int i = start; i < end; i++) {
+                x_center_of_mass += embed_x_in[i];
+                y_center_of_mass += embed_y_in[i];
+            }
 
-    while (!tree_queue.empty()) {
-        QuadTreeNode* next_child = tree_queue.front();
-        tree_queue.pop();
-
-        if (next_child != NULL) {
-            std::cout << "Center of mass: " << next_child->center_of_mass.x << " " << next_child->center_of_mass.y <<
-                         "  Num points: " << next_child->num_points << std::endl;
-
-            tree_queue.push(next_child->top_left_child);
-            tree_queue.push(next_child->top_right_child);
-            tree_queue.push(next_child->bottom_left_child);
-            tree_queue.push(next_child->bottom_right_child);
+            x_center_of_mass /= num_points;
+            y_center_of_mass /= num_points;
+            node->center_of_mass = make_float2(x_center_of_mass, y_center_of_mass);
+            node->is_leaf = true;
         }
-    }     
+        return;
+    }
 
+    float2 box_center = find_box_center(node);
+    int num_top_left = 0;
+    int num_top_right = 0;
+    int num_bottom_left = 0;
+    int num_bottom_right = 0;
+
+    // Step 1: Each thread counts the number of points per bucket
+    for (int i = start + tid; i < end; i += num_threads) {
+        float x = embed_x_in[i];
+        float y = embed_y_in[i];
+        if (x <= box_center.x && y <= box_center.y) {
+            num_top_left++;
+        }
+        else if (x > box_center.x && y <= box_center.y) {
+            num_top_right++;
+        }
+        else if (x <= box_center.x && y > box_center.y) {
+            num_bottom_left++;
+        }
+        else {
+            num_bottom_right++;
+        }
+    }
+
+    bucket_counts_tl[tid] = num_top_left;
+    bucket_counts_tr[tid] = num_top_right;
+    bucket_counts_bl[tid] = num_bottom_left;
+    bucket_counts_br[tid] = num_bottom_right;
+
+    // Step 2: Perform Exclusive Scan for each bucket
+    sharedMemExclusiveScan(tid, bucket_counts_tl, ex_scan_tl, ex_scan_scratch, num_threads);
+    sharedMemExclusiveScan(tid, bucket_counts_tr, ex_scan_tr, ex_scan_scratch, num_threads);
+    sharedMemExclusiveScan(tid, bucket_counts_bl, ex_scan_bl, ex_scan_scratch, num_threads);
+    sharedMemExclusiveScan(tid, bucket_counts_br, ex_scan_br, ex_scan_scratch, num_threads);
+    __syncthreads();
+
+    // Step 3: Compute offsets for reordered indices
+    int offset_tr = start + ex_scan_tl[num_threads - 1] + bucket_counts_tl[num_threads - 1];
+    int offset_bl = offset_tr + ex_scan_tr[num_threads - 1] + bucket_counts_tr[num_threads - 1];
+    int offset_br = offset_bl + ex_scan_bl[num_threads - 1] + bucket_counts_bl[num_threads - 1];
+    __syncthreads();
+
+    ex_scan_tl[tid] += start;
+    ex_scan_tr[tid] += offset_tr;
+    ex_scan_bl[tid] += offset_bl;
+    ex_scan_br[tid] += offset_br;
+    __syncthreads();
+
+    // Step 4: Fill in points in bucket sort order
+    int fill_idx_tl = ex_scan_tl[tid];
+    int fill_idx_tr = ex_scan_tr[tid];
+    int fill_idx_bl = ex_scan_bl[tid];
+    int fill_idx_br = ex_scan_br[tid];
+
+    for (int i = start + tid; i < end; i += num_threads) {
+        float x = embed_x_in[i];
+        float y = embed_y_in[i];
+        if (x <= box_center.x && y <= box_center.y) {
+            embed_x_out[fill_idx_tl] = x;
+            embed_y_out[fill_idx_tl++] = y;
+        }
+        else if (x > box_center.x && y <= box_center.y) {
+            embed_x_out[fill_idx_tr] = x;
+            embed_y_out[fill_idx_tr++] = y;
+        }
+        else if (x <= box_center.x && y > box_center.y) {
+            embed_x_out[fill_idx_bl] = x;
+            embed_y_out[fill_idx_bl++] = y;
+        }
+        else {
+            embed_x_out[fill_idx_br] = x;
+            embed_y_out[fill_idx_br++] = y;
+        }
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+        int smem_size = 10 * num_threads * sizeof(int);
+        float2 top_left = nodes[root_node_idx].top_left;
+        float2 bottom_right = nodes[root_node_idx].bottom_right;        
+
+        nodes[4 * root_node_idx + 1].top_left = top_left;
+        nodes[4 * root_node_idx + 1].bottom_right = box_center;
+        nodes[4 * root_node_idx + 2].top_left = make_float2(box_center.x, top_left.y);
+        nodes[4 * root_node_idx + 2].bottom_right = make_float2(bottom_right.x, box_center.y);
+        nodes[4 * root_node_idx + 3].top_left = make_float2(top_left.x, box_center.y);
+        nodes[4 * root_node_idx + 3].bottom_right = make_float2(box_center.x, bottom_right.y);
+        nodes[4 * root_node_idx + 4].top_left = box_center;
+        nodes[4 * root_node_idx + 4].bottom_right = bottom_right;
+
+        nodes[4 * root_node_idx + 1].start = start;
+        nodes[4 * root_node_idx + 1].end = ex_scan_tr[0];
+        nodes[4 * root_node_idx + 2].start = ex_scan_tr[0];
+        nodes[4 * root_node_idx + 2].end = ex_scan_bl[0];
+        nodes[4 * root_node_idx + 3].start = ex_scan_bl[0];
+        nodes[4 * root_node_idx + 3].end = ex_scan_br[0];
+        nodes[4 * root_node_idx + 4].start = ex_scan_br[0];
+        nodes[4 * root_node_idx + 4].end = end;
+
+        // Launching kernel for all 4 quadrants
+        kernel_build_quadtree<<<4, num_threads, smem_size>>>(
+            embed_x_out, embed_y_out, embed_x_in, embed_y_in,
+            nodes, remaining_depth - 1, 4 * root_node_idx + 1
+        );
+    }
 }

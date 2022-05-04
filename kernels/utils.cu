@@ -50,6 +50,7 @@ void initialize_points(thrust::device_vector<float> &embed_x,
     thrust::host_vector<float> host_embed_y(num_points);
 
     std::default_random_engine generator(15618);
+    generator.seed(4);
     std::normal_distribution<float> norm_dist(0.0, 0.0001);
     for (int i = 0; i < num_points; i++) {
         host_embed_x[i] = norm_dist(generator);

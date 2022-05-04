@@ -1,10 +1,11 @@
 #include <chrono>
 #include <cuda.h>
+#include <queue>
+
+#include "gradients.h"
+#include "quad_tree.h"
 #include "thrust/device_vector.h"
 #include "thrust/reduce.h"
-#include "gradients.h"
-#include "quad_tree2.h"
-#include <queue>
 
 __global__ void kernel_attractive_forces(const float *__restrict__ pij,
                                          const float *__restrict__ embed_x,
@@ -39,11 +40,10 @@ __device__ __inline__ void device_compute_partial_forces(QuadTreeNode_t *nodes,
                                                          int point_index, float target_x, float target_y,
                                                          int root_idx, float theta) {
 
-    if (root_idx < 0) {
+    QuadTreeNode_t *root = &nodes[root_idx];
+    if (!root->is_node) {
         return;
     }
-
-    QuadTreeNode_t *root = &nodes[root_idx];
 
     float dx = target_x - root->center_of_mass.x;
     float dy = target_y - root->center_of_mass.y;
@@ -54,28 +54,30 @@ __device__ __inline__ void device_compute_partial_forces(QuadTreeNode_t *nodes,
     float r_cell = (box_width > box_height) ? box_width : box_height;
 
     // Base case: When sufficiently far enough or leaf node
-    bool is_leaf = (root->top_left_child_idx < 0) && (root->top_right_child_idx < 0) &&
-                   (root->bottom_left_child_idx < 0) && (root->bottom_right_child_idx < 0); 
-    if (is_leaf || theta * dist > r_cell) {
+    if (root->is_leaf || theta * dist > r_cell) {
         grad_repulsive_x[point_index] += N_cell * dx / ((1.f + dx * dx + dy * dy) * (1.f + dx * dx + dy * dy));
         grad_repulsive_y[point_index] += N_cell * dy / ((1.f + dx * dx + dy * dy) * (1.f + dx * dx + dy * dy));
         z_partials[point_index] += N_cell / (1.f + dx * dx + dy * dy);
         return;
     }
-     
-    device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials,
-                                  point_index, target_x, target_y, root->top_left_child_idx, theta);
     
+    for (int ofs = 1; ofs <= 4; ofs++) {
+        if (nodes[4 * root_idx + ofs].is_node) {
+            device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials,
+                                          point_index, target_x, target_y, 4 * root_idx + ofs, theta);
+        }
+    }
+
+    /*
     device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials,
-                                  point_index, target_x, target_y, root->top_right_child_idx, theta);
+                                  point_index, target_x, target_y, 4 * root_idx + 1, theta);
     device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials,
-                                  point_index, target_x, target_y, root->bottom_left_child_idx, theta);
-    
-   
+                                  point_index, target_x, target_y, 4 * root_idx + 2, theta);
     device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials,
-                                  point_index, target_x, target_y, root->bottom_right_child_idx, theta);
-  
- 
+                                  point_index, target_x, target_y, 4 * root_idx + 3, theta);
+    device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials,
+                                  point_index, target_x, target_y, 4 * root_idx + 4, theta);
+    */
 }
 
 __global__ void kernel_repulsive_forces(QuadTreeNode_t *nodes,
@@ -85,17 +87,40 @@ __global__ void kernel_repulsive_forces(QuadTreeNode_t *nodes,
                                         float *__restrict__ grad_repulsive_y,
                                         float *__restrict__ z_partials,
                                         int num_points, int theta) {
+    /*
     register int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= num_points) {
         return;
-    }
+    } 
 
     float target_x = embed_x[i];
     float target_y = embed_y[i];
 
     device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials, i,
                                   target_x, target_y, 0, theta);   
+    */
 
+    register int num_threads = blockDim.x * gridDim.x;
+    register int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    for (int i = tid; i < num_points; i += num_threads) {
+        float target_x = embed_x[i];
+        float target_y = embed_y[i];
+        device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials, i,
+                                      target_x, target_y, 0, theta);
+    }
+}
+
+__global__ void kernel_init_root(QuadTreeNode_t *root,
+                                 float2 top_left, float2 bottom_right,
+                                 int num_points) {
+    
+    root->top_left = top_left;
+    root->bottom_right = bottom_right;
+    root->center_of_mass = make_float2(0.f, 0.f);
+    root->is_node = true;
+    root->is_leaf = false;
+    root->start = 0;
+    root->end = num_points;
 }
 
 __global__ void kernel_normalize_forces(float *__restrict__ grad_repulsive_x,
@@ -182,132 +207,10 @@ void compute_attractive_forces(thrust::device_vector<float> &pij,
     );
 }
 
-void insert_quadtree_node(QuadTreeNode_t *nodes, int node_index,
-                          float x, float y, int *next_free_index, int max_depth) {
-    QuadTreeNode_t *node = &nodes[node_index];
-    if (x < node->top_left.x || y < node->top_left.y ||
-        x > node->bottom_right.x || y > node->bottom_right.y) {
-        std::cout << "New point does not belong in current quad tree node\n";
-        return;
-    }
-
-    float2 old_point;
-    int N = node->num_points;
-    // Immediately occupy empty cell
-    if (N == 0) {
-        node->center_of_mass.x = x;
-        node->center_of_mass.y = y;
-        node->num_points++;
-        return;
-    }
-
-    old_point = node->center_of_mass;
-    node->center_of_mass.x = (node->center_of_mass.x * N + x) / (N + 1);
-    node->center_of_mass.y = (node->center_of_mass.y * N + y) / (N + 1);
-    node->num_points++;
-    if (max_depth == 0) {
-        return;
-    }
-
-    // If cell had one point (leaf cell), split it into four
-    float2 box_center = find_box_center(node);
-    float2 zeros = make_float2(0.f, 0.f);
-    if (N == 1) {
-        init_quadtree_node(&nodes[*next_free_index], node->top_left, box_center,
-                           zeros, 0);
-        init_quadtree_node(&nodes[*next_free_index + 1], make_float2(box_center.x, node->top_left.y),
-                           make_float2(node->bottom_right.x, box_center.y), zeros, 0);
-        init_quadtree_node(&nodes[*next_free_index + 2], make_float2(node->top_left.x, box_center.y),
-                           make_float2(box_center.x, node->bottom_right.y), zeros, 0);
-        init_quadtree_node(&nodes[*next_free_index + 3], box_center, node->bottom_right,
-                           zeros, 0);
-        node->top_left_child_idx = *next_free_index;
-        node->top_right_child_idx = *next_free_index + 1;
-        node->bottom_left_child_idx = *next_free_index + 2;
-        node->bottom_right_child_idx = *next_free_index + 3;
-        *next_free_index += 4;
-
-        // Insert new point and re-insert original point (should succeed immediately)
-        if (x <= box_center.x && y <= box_center.y) {
-            insert_quadtree_node(nodes, node->top_left_child_idx, x, y, next_free_index, max_depth-1);
-        }
-        else if (x > box_center.x && y <= box_center.y) {
-            insert_quadtree_node(nodes, node->top_right_child_idx, x, y, next_free_index, max_depth-1);
-        }
-        else if (x <= box_center.x && y > box_center.y) {
-            insert_quadtree_node(nodes, node->bottom_left_child_idx, x, y, next_free_index, max_depth-1);
-        }
-        else if (x > box_center.x && y > box_center.y) {
-            insert_quadtree_node(nodes, node->bottom_right_child_idx, x, y, next_free_index, max_depth-1);
-        }
-
-        if (old_point.x <= box_center.x && old_point.y <= box_center.y) {
-            insert_quadtree_node(nodes, node->top_left_child_idx, old_point.x, old_point.y, next_free_index, max_depth-1);
-        }
-        else if (old_point.x > box_center.x && old_point.y <= box_center.y) {
-            insert_quadtree_node(nodes, node->top_right_child_idx, old_point.x, old_point.y, next_free_index, max_depth-1);
-        }
-        else if (old_point.x <= box_center.x && old_point.y > box_center.y) {
-            insert_quadtree_node(nodes, node->bottom_left_child_idx, old_point.x, old_point.y, next_free_index, max_depth-1);
-        }
-        else if (old_point.x > box_center.x && old_point.y > box_center.y) {
-            insert_quadtree_node(nodes, node->bottom_right_child_idx, old_point.x, old_point.y, next_free_index, max_depth-1);
-        }
-        return;
-    }
-
-    // Otherwise, recurse down to children. Node must have 4 children allocated.
-    assert (node->top_left_child_idx >= 0 && node->top_right_child_idx >= 0 &&
-            node->bottom_left_child_idx >= 0 && node->bottom_right_child_idx >= 0);
-    if (x <= box_center.x && y <= box_center.y) {
-        insert_quadtree_node(nodes, node->top_left_child_idx, x, y, next_free_index, max_depth-1);
-    }
-    else if (x > box_center.x && y <= box_center.y) {
-        insert_quadtree_node(nodes, node->top_right_child_idx, x, y, next_free_index, max_depth-1);
-    }
-    else if (x <= box_center.x && y > box_center.y) {
-        insert_quadtree_node(nodes, node->bottom_left_child_idx, x, y, next_free_index, max_depth-1);
-    }
-    else if (x > box_center.x && y > box_center.y) {
-        insert_quadtree_node(nodes, node->bottom_right_child_idx, x, y, next_free_index, max_depth-1);
-    }
-}
-
-void print_quad_tree2(QuadTreeNode* root) {
-    if (root->num_points == 0) {
-        return;
-    }
-    
-    std::cout << "Center Of Mass: " << root->center_of_mass.x << " " << root->center_of_mass.y <<
-                 " Num points: " << root->num_points << std::endl;
-    
-    std::queue<int> tree_queue;
-    
-    tree_queue.push(root->top_left_child_idx);
-    tree_queue.push(root->top_right_child_idx);
-    tree_queue.push(root->bottom_left_child_idx);
-    tree_queue.push(root->bottom_right_child_idx);
-
-    while (!tree_queue.empty()) {
-        int next_child_idx = tree_queue.front();
-        tree_queue.pop();
-
-        if (next_child_idx > -1 && root[next_child_idx].num_points > 0) {
-            QuadTreeNode* next_child = &root[next_child_idx];
-            std::cout << "Center Of Mass: " << next_child->center_of_mass.x << " " << next_child->center_of_mass.y <<
-                         " Num points: " << next_child->num_points << std::endl;
-
-            tree_queue.push(next_child->top_left_child_idx);
-            tree_queue.push(next_child->top_right_child_idx);
-            tree_queue.push(next_child->bottom_left_child_idx);
-            tree_queue.push(next_child->bottom_right_child_idx);
-        }
-    }
-
-}
-
 void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
                               thrust::device_vector<float> &embed_y,
+                              thrust::device_vector<float> &embed_x_out,
+                              thrust::device_vector<float> &embed_y_out,
                               thrust::device_vector<float> &grad_repulsive_x,
                               thrust::device_vector<float> &grad_repulsive_y,
                               int num_points, float theta) {
@@ -315,10 +218,9 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
     using namespace std::chrono;
     typedef std::chrono::high_resolution_clock Clock;
     typedef std::chrono::duration<double> dsec;
- 
+
     // Step 1: Build the quad tree with the embeded points
     auto build_start = Clock::now();
-
     auto min_max_x = thrust::minmax_element(embed_x.begin(), embed_x.end());
     auto min_max_y = thrust::minmax_element(embed_y.begin(), embed_y.end());
 
@@ -327,63 +229,99 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
     float2 bottom_right = make_float2(min_max_x.second[0] + 1e-5,
                                       min_max_y.second[0] + 1e-5);
 
-    int max_depth = 8;
+    int max_depth = 7;
     int max_nodes = ((1 << (2 * max_depth + 2)) - 1) / 3; // 1 + 4 + 4^2 + ... + 4^max_depth
-
-    QuadTreeNode_t *nodes = (QuadTreeNode_t *) malloc(max_nodes * sizeof(QuadTreeNode_t));
-    init_quadtree_node(&nodes[0], top_left, bottom_right, make_float2(0.f, 0.f), 0);
-    int next_free_idx = 1;
-
-    std::vector<float> embed_x_h(num_points);
-    std::vector<float> embed_y_h(num_points);
-    thrust::copy(embed_x.begin(), embed_x.end(), embed_x_h.begin());
-    thrust::copy(embed_y.begin(), embed_y.end(), embed_y_h.begin());
-
-    for (int i = 0; i < num_points; i++) {
-        insert_quadtree_node(nodes, 0, embed_x_h[i], embed_y_h[i], &next_free_idx, max_depth);
-    }
-
-    double build_time = duration_cast<dsec>(Clock::now() - build_start).count();
-
-    // Step 2: Memcpy to GPU;
 
     QuadTreeNode_t *d_nodes;
     cudaMalloc((void **)&d_nodes, max_nodes * sizeof(QuadTreeNode_t));
-    cudaMemcpy(d_nodes, nodes, max_nodes * sizeof(QuadTreeNode_t), cudaMemcpyHostToDevice);
+    cudaMemset(d_nodes, 0, max_nodes * sizeof(QuadTreeNode_t));
+    kernel_init_root<<<1, 1>>>(d_nodes, top_left, bottom_right, num_points);
+
+    int smem_size = 10 * 1024 * sizeof(int);
+    thrust::device_vector<float> embed_x_in(embed_x);
+    thrust::device_vector<float> embed_y_in(embed_y);
     
-    thrust::device_vector<float> z_partials(num_points, 0.f);
+    kernel_build_quadtree<<<1, 1024, smem_size>>>(
+        thrust::raw_pointer_cast(embed_x_in.data()),
+        thrust::raw_pointer_cast(embed_y_in.data()),
+        thrust::raw_pointer_cast(embed_x_out.data()),
+        thrust::raw_pointer_cast(embed_y_out.data()),
+        d_nodes, max_depth, 0
+    );
+
+    cudaDeviceSynchronize();
+ 
+    double build_time = duration_cast<dsec>(Clock::now() - build_start).count();
+    auto center_mass_start = Clock::now();
+    kernel_center_of_mass<<<1, 1024>>>(d_nodes, max_depth);
+    cudaDeviceSynchronize();
+    double center_mass_time = duration_cast<dsec>(Clock::now() - center_mass_start).count();
+    
+    //QuadTreeNode_t *h_nodes = (QuadTreeNode_t *) malloc(max_nodes * sizeof(QuadTreeNode_t));
+    //cudaMemcpy(h_nodes, d_nodes, max_nodes * sizeof(QuadTreeNode_t), cudaMemcpyDeviceToHost);
+
+    /*
+    int num_nodes = 0;
+    for (int i = 0; i < max_nodes; i++) {
+        QuadTreeNode_t *node = &h_nodes[i];
+        if (node->is_node) {
+            if (node->is_leaf) num_nodes += node->num_points;
+            std::cout << i << ", num points: " << node->num_points <<
+            ", center of mass: " << node->center_of_mass.x << " " << node->center_of_mass.y
+            << ", tl: " << node->top_left.x << " " << node->top_left.y
+            << ", br: " << node->bottom_right.x << " " << node->bottom_right.y
+            << ", start: " << node->start << ", end: " << node->end << ", is_leaf: " << node->is_leaf << std::endl;
+        }
+    }
+    */
 
     // Step 3: Traverse tree
     auto traverse_start = Clock::now();
-   
     const int BLOCKSIZE = 1024;
     const int NBLOCKS = (num_points + BLOCKSIZE - 1) / BLOCKSIZE;
-    kernel_repulsive_forces<<<NBLOCKS, BLOCKSIZE>>>(d_nodes,
-                                                    thrust::raw_pointer_cast(embed_x.data()),
-                                                    thrust::raw_pointer_cast(embed_y.data()),
-                                                    thrust::raw_pointer_cast(grad_repulsive_x.data()),
-                                                    thrust::raw_pointer_cast(grad_repulsive_y.data()),
-                                                    thrust::raw_pointer_cast(z_partials.data()),
-                                                    num_points, theta);
+
+    thrust::device_vector<float> z_partials(num_points, 0.f);
+    kernel_repulsive_forces<<<150, 1>>>(d_nodes,
+                                        thrust::raw_pointer_cast(embed_x.data()),
+                                        thrust::raw_pointer_cast(embed_y.data()),
+                                        thrust::raw_pointer_cast(grad_repulsive_x.data()),
+                                        thrust::raw_pointer_cast(grad_repulsive_y.data()),
+                                        thrust::raw_pointer_cast(z_partials.data()),
+                                        num_points, theta);
     cudaDeviceSynchronize();
+    /* 
+    int num_nodes = 0;
+    for (int i = 0; i < max_nodes; i++) {
+        QuadTreeNode_t *node = &h_nodes[i];
+        if (node->is_node) {
+            if (node->is_leaf) num_nodes += node->num_points;
+            std::cout << i << ", num points: " << node->num_points <<
+            ", center of mass: " << node->center_of_mass.x << " " << node->center_of_mass.y
+            << ", tl: " << node->top_left.x << " " << node->top_left.y
+            << ", br: " << node->bottom_right.x << " " << node->bottom_right.y
+            << ", start: " << node->start << ", end: " << node->end << ", is_leaf: " << node->is_leaf << std::endl;
+        }
+    }
+    free(h_nodes);
+    */
+ 
     double traverse_time = duration_cast<dsec>(Clock::now() - traverse_start).count();
 
     // Step 4: Normalize forces
     auto normalize_start = Clock::now();
-    float sum_z = thrust::reduce(z_partials.begin(), z_partials.end(), 0.f, thrust::plus<float>());
 
+    float sum_z = thrust::reduce(z_partials.begin(), z_partials.end(), 0.f, thrust::plus<float>());
     kernel_normalize_forces<<<NBLOCKS, BLOCKSIZE>>>(thrust::raw_pointer_cast(grad_repulsive_x.data()),
                                                     thrust::raw_pointer_cast(grad_repulsive_y.data()),
                                                     sum_z, num_points);
     cudaDeviceSynchronize();
-
     double normalize_time = duration_cast<dsec>(Clock::now() - normalize_start).count();
 
     printf("Building Tree Time: %lf.\n", build_time);
+    printf("Finding Center of Mass Time: %lf.\n", center_mass_time);
     printf("Traversing Tree Time: %lf.\n", traverse_time);
     printf("Normalizing/Reducing Time: %lf.\n", normalize_time);
     cudaFree(d_nodes);
-    free(nodes);    
 }
 
 void apply_forces(thrust::device_vector<float> &embed_x,

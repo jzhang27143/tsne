@@ -11,6 +11,8 @@ void compute_attractive_forces(thrust::device_vector<float> &pij,
 
 void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
                               thrust::device_vector<float> &embed_y,
+                              thrust::device_vector<float> &embed_x_out,
+                              thrust::device_vector<float> &embed_y_out,
                               thrust::device_vector<float> &grad_repulsive_x,
                               thrust::device_vector<float> &grad_repulsive_y, 
                               int num_points, float theta);
