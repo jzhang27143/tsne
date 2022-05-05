@@ -80,7 +80,7 @@ __device__ __inline__ void device_compute_partial_forces(QuadTreeNode_t *nodes,
     */
 }
 
-__global__ void kernel_repulsive_forces(QuadTreeNode_t *nodes,
+__global__ void kernel_repulsive_forces_old(QuadTreeNode_t *nodes,
                                         const float *__restrict__ embed_x,
                                         const float *__restrict__ embed_y,
                                         float *__restrict__ grad_repulsive_x,
@@ -108,6 +108,64 @@ __global__ void kernel_repulsive_forces(QuadTreeNode_t *nodes,
         device_compute_partial_forces(nodes, grad_repulsive_x, grad_repulsive_y, z_partials, i,
                                       target_x, target_y, 0, theta);
     }
+}
+
+__global__ void kernel_repulsive_forces(QuadTreeNode_t *nodes,
+                                        const float *__restrict__ embed_x,
+                                        const float *__restrict__ embed_y,
+                                        float *__restrict__ grad_repulsive_x,
+                                        float *__restrict__ grad_repulsive_y,
+                                        float *__restrict__ z_partials,
+                                        int num_points, int theta) {
+    register int num_threads = blockDim.x * gridDim.x;
+    register int tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+    for (int i = tid; i < num_points; i += num_threads) {
+        float target_x = embed_x[i];
+        float target_y = embed_y[i];
+   
+        int stack_indices[1 << 12]; // 4^6
+        int pointer = 0;
+        stack_indices[pointer++] = 0;
+
+        do {
+            int node_idx = stack_indices[--pointer];
+            
+            QuadTreeNode_t *node = &nodes[node_idx];
+ 
+            float dx = target_x - node->center_of_mass.x;
+            float dy = target_y - node->center_of_mass.y;
+            float dist = pow(dx * dx + dy * dy, 0.5);
+            float N_cell = (float) node->num_points;
+            float box_width = find_box_width(node);
+            float box_height = find_box_height(node);
+            float r_cell = (box_width > box_height) ? box_width : box_height;
+            
+            if (node->is_leaf || theta * dist > r_cell) {
+                grad_repulsive_x[i] += N_cell * dx / ((1.f + dx * dx + dy * dy) * (1.f + dx * dx + dy * dy));
+                grad_repulsive_y[i] += N_cell * dy / ((1.f + dx * dx + dy * dy) * (1.f + dx * dx + dy * dy));
+                z_partials[i] += N_cell / (1.f + dx * dx + dy * dy);
+            } else {
+                if ((&nodes[4 * node_idx + 1])->is_node) {
+                    stack_indices[pointer++] = 4 * node_idx + 1;
+                }
+
+                if ((&nodes[4 * node_idx + 2])->is_node) {
+                    stack_indices[pointer++] = 4 * node_idx + 2;
+                }
+
+                if ((&nodes[4 * node_idx + 3])->is_node) {
+                    stack_indices[pointer++] = 4 * node_idx + 3;
+                }
+
+                if ((&nodes[4 * node_idx + 4])->is_node) {
+                    stack_indices[pointer++] = 4 * node_idx + 4;
+                }
+            }
+        }
+        while (pointer > 0);
+    }
+
 }
 
 __global__ void kernel_init_root(QuadTreeNode_t *root,
@@ -281,7 +339,7 @@ void compute_repulsive_forces(thrust::device_vector<float> &embed_x,
     const int NBLOCKS = (num_points + BLOCKSIZE - 1) / BLOCKSIZE;
 
     thrust::device_vector<float> z_partials(num_points, 0.f);
-    kernel_repulsive_forces<<<150, 1>>>(d_nodes,
+    kernel_repulsive_forces<<<NBLOCKS, BLOCKSIZE>>>(d_nodes,
                                         thrust::raw_pointer_cast(embed_x.data()),
                                         thrust::raw_pointer_cast(embed_y.data()),
                                         thrust::raw_pointer_cast(grad_repulsive_x.data()),
