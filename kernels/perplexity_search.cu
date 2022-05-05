@@ -1,3 +1,4 @@
+// For pij initialization, we borrow code from https://github.com/CannyLab/tsne-cuda
 #include "perplexity_search.h"
 #include <cfloat>
 #include <math.h>
