@@ -1,3 +1,4 @@
+// This file was obtained from 15-618 Assignment 2's circle renderer 
 // exclusiveScan.cu_inl
 
 // This is a shared-memory implementation of exclusive scan. Note that the
