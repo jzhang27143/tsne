@@ -1,6 +1,8 @@
 # Parallelizing Gradient Calculations in t-SNE
 By: Jason Zhang, Vy Nguyen
 
+Our project video can be found here: https://www.youtube.com/watch?v=1XCk9WfPTds
+
 ## Summary
 We plan to parallelize the t-distributed Stochastic Neighbor Embedding (t-SNE) method for non-linear dimensionality reduction using NVIDIA GPU's. Sequential implementations have seen speedups in algorithmic complexity from nearest-neighbors and Barnes-Hut approximations [1], and in this work we seek to exploit parallelism to further accelerate the gradient calculations in t-SNE.
 
